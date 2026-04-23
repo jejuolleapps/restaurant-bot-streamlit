@@ -103,61 +103,98 @@ AGENT_LABELS = {
 }
 
 
+HANDOFF_TEXT_MARKERS = (
+    "연결해 드릴게요",
+    "연결해드릴게요",
+    "담당에게 연결",
+    "전문가에게 연결",
+)
+
+
+async def _stream_once(agent, user_message: str):
+    """한 번의 스트림 실행. 반환: (any_handoff_happened, response_text, last_agent)."""
+    current_agent_name = agent.name
+    active_placeholder = st.empty()
+    active_response = ""
+    any_handoff_happened = False
+
+    stream = Runner.run_streamed(
+        agent,
+        user_message,
+        session=session,
+        context=customer_ctx,
+        max_turns=12,
+    )
+
+    async for event in stream.stream_events():
+        if event.type == "agent_updated_stream_event":
+            new_name = event.new_agent.name
+            if new_name != current_agent_name:
+                if active_response:
+                    active_placeholder.write(
+                        active_response.replace("$", "\\$")
+                    )
+
+                label = AGENT_LABELS.get(new_name, new_name)
+                st.info(f"**{label}**(이)가 응답합니다")
+                active_placeholder = st.empty()
+                active_response = ""
+                current_agent_name = new_name
+                any_handoff_happened = True
+
+                with st.sidebar:
+                    st.success(f"연결: → **{new_name}**")
+
+        elif event.type == "raw_response_event":
+            if event.data.type == "response.output_text.delta":
+                active_response += event.data.delta
+                active_placeholder.write(
+                    active_response.replace("$", "\\$")
+                )
+
+    if active_response:
+        active_placeholder.write(active_response.replace("$", "\\$"))
+
+    return any_handoff_happened, active_response, stream.last_agent
+
+
 async def run_agent(user_message: str) -> None:
     with st.chat_message("ai"):
         start_agent = st.session_state["current_agent"]
-        current_agent_name = start_agent.name
-        active_placeholder = st.empty()
-        active_response = ""
-        last_agent_final = start_agent
 
         with st.sidebar:
-            st.write(f"시작 에이전트: **{current_agent_name}**")
+            st.write(f"시작 에이전트: **{start_agent.name}**")
 
         try:
-            stream = Runner.run_streamed(
-                start_agent,
-                user_message,
-                session=session,
-                context=customer_ctx,
-                max_turns=12,
+            any_handoff, text, last_agent = await _stream_once(
+                start_agent, user_message
             )
 
-            async for event in stream.stream_events():
-                if event.type == "agent_updated_stream_event":
-                    new_name = event.new_agent.name
-                    if new_name != current_agent_name:
-                        if active_response:
-                            active_placeholder.write(
-                                active_response.replace("$", "\\$")
-                            )
+            # 자동 재라우팅: handoff 텍스트는 나왔는데 실제 전환이 없고,
+            # 시작이 Triage 가 아닌 경우 → Triage 로 한 번만 재시도.
+            # 실제 handoff 가 있었던 경우(any_handoff=True)에는 재시도 하지 않아
+            # 핑퐁을 유발하지 않음.
+            need_retry = (
+                not any_handoff
+                and any(m in text for m in HANDOFF_TEXT_MARKERS)
+                and start_agent.name != "Triage Agent"
+            )
 
-                        label = AGENT_LABELS.get(new_name, new_name)
-                        st.info(f"**{label}**(이)가 응답합니다")
-                        active_placeholder = st.empty()
-                        active_response = ""
-                        current_agent_name = new_name
+            if need_retry:
+                st.info("자동으로 안내 데스크를 통해 다시 연결합니다...")
+                with st.sidebar:
+                    st.warning("자동 재라우팅 → Triage")
 
-                        with st.sidebar:
-                            st.success(f"연결: → **{new_name}**")
+                any_handoff, text, last_agent = await _stream_once(
+                    triage_agent, user_message
+                )
 
-                elif event.type == "raw_response_event":
-                    if event.data.type == "response.output_text.delta":
-                        active_response += event.data.delta
-                        active_placeholder.write(
-                            active_response.replace("$", "\\$")
-                        )
-
-            if active_response:
-                active_placeholder.write(active_response.replace("$", "\\$"))
-
-            last_agent_final = stream.last_agent
-            st.session_state["current_agent"] = last_agent_final
+            st.session_state["current_agent"] = last_agent
 
             with st.sidebar:
-                st.write(f"최종 에이전트: **{last_agent_final.name}**")
+                st.write(f"최종 에이전트: **{last_agent.name}**")
 
-            if not active_response:
+            if not text:
                 st.warning(
                     "응답이 생성되지 않았어요. 같은 질문을 다시 해주시거나, "
                     "사이드바의 '대화 초기화' 후 새로 시도해주세요."
