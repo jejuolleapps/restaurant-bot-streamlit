@@ -104,14 +104,13 @@ AGENT_LABELS = {
 
 async def run_agent(user_message: str) -> None:
     with st.chat_message("ai"):
-        status = st.status("처리 중...", expanded=False)
-        container = st.container()
-        response = ""
-        text_placeholder = container.empty()
         current_agent_name = st.session_state["current_agent"].name
+        active_placeholder = st.empty()
+        active_response = ""
+        has_any_output = False
 
         with st.sidebar:
-            st.write(f"현재 에이전트: **{current_agent_name}**")
+            st.write(f"시작 에이전트: **{current_agent_name}**")
 
         try:
             stream = Runner.run_streamed(
@@ -125,28 +124,48 @@ async def run_agent(user_message: str) -> None:
                 if event.type == "agent_updated_stream_event":
                     new_name = event.new_agent.name
                     if new_name != current_agent_name:
+                        # 이전 에이전트 응답 최종 렌더링
+                        if active_response:
+                            active_placeholder.write(
+                                active_response.replace("$", "\\$")
+                            )
+
+                        # 새 에이전트 섹션 시작
                         label = AGENT_LABELS.get(new_name, new_name)
-                        if response:
-                            text_placeholder.write(response.replace("$", "\\$"))
-                            response = ""
-                        container.info(f"**{label}에게 연결합니다...**")
-                        text_placeholder = container.empty()
+                        st.info(f"**{label}**(이)가 응답합니다")
+                        active_placeholder = st.empty()
+                        active_response = ""
                         current_agent_name = new_name
+
                         with st.sidebar:
-                            st.success(f"연결: -> **{new_name}**")
+                            st.success(f"연결: → **{new_name}**")
 
                 elif event.type == "raw_response_event":
                     if event.data.type == "response.output_text.delta":
-                        response += event.data.delta
-                        text_placeholder.write(response.replace("$", "\\$"))
-                    elif event.data.type == "response.completed":
-                        status.update(label="완료", state="complete")
+                        active_response += event.data.delta
+                        active_placeholder.write(
+                            active_response.replace("$", "\\$")
+                        )
+                        has_any_output = True
+
+            # 최종 응답 확정 렌더링
+            if active_response:
+                active_placeholder.write(active_response.replace("$", "\\$"))
+
+            # handoff만 되고 응답이 없을 경우 안전장치
+            if not has_any_output:
+                active_placeholder.warning(
+                    "응답이 생성되지 않았어요. 같은 질문을 다시 해주시거나, "
+                    "사이드바의 '대화 초기화' 후 새로 시도해주세요."
+                )
 
             st.session_state["current_agent"] = stream.last_agent
 
+            with st.sidebar:
+                st.write(f"최종 에이전트: **{stream.last_agent.name}**")
+
         except InputGuardrailTripwireTriggered:
-            status.update(label="입력 차단됨", state="error")
-            container.warning(
+            active_placeholder.warning(
                 "저는 레스토랑 관련 질문(메뉴 / 주문 / 예약 / 불만)에 대해서만 "
                 "도와드리고 있어요. 부적절한 표현도 정중히 사양합니다. "
                 "무엇을 도와드릴까요?"
@@ -155,8 +174,7 @@ async def run_agent(user_message: str) -> None:
                 st.error("Input Guardrail 발동")
 
         except OutputGuardrailTripwireTriggered:
-            status.update(label="응답 차단됨", state="error")
-            container.warning(
+            active_placeholder.warning(
                 "죄송합니다. 답변을 생성했지만 내부 기준에 맞지 않아 전달하지 "
                 "못했습니다. 다른 방식으로 다시 질문해 주시겠어요?"
             )
