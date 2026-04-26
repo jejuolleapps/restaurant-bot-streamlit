@@ -247,19 +247,7 @@ if prompt:
 # 사이드바
 # ---------------------------------------------------
 with st.sidebar:
-    st.header("설정")
-
-    name_input = st.text_input("손님 이름", value=customer_ctx.customer_name)
-    vip_input = st.checkbox("VIP 손님", value=customer_ctx.is_vip)
-    if st.button("적용"):
-        st.session_state["customer_ctx"] = RestaurantContext(
-            customer_name=name_input,
-            is_vip=vip_input,
-        )
-        st.rerun()
-
-    st.divider()
-    st.subheader("에이전트 구성")
+    st.header("에이전트 구성")
     st.caption("- Triage Agent - 요청 분류 및 라우팅")
     st.caption("- Menu Agent - 메뉴/재료/알레르기")
     st.caption("- Order Agent - 주문 접수/확인")
@@ -268,18 +256,29 @@ with st.sidebar:
     st.caption("- Input/Output Guardrails 적용")
 
     st.divider()
-    if st.button("대화 초기화 (Triage로 돌아가기)"):
+    st.subheader("대화 메모리")
+
+    if st.button("Reset memory"):
         try:
             asyncio.run(session.clear_session())
         except Exception:
             pass
-        # 세션 객체 자체를 새로 만들어 잔여 상태 완전 제거
         st.session_state["session"] = SQLiteSession(
             "restaurant-chat-history",
             ":memory:",
         )
         st.session_state["current_agent"] = triage_agent
         st.rerun()
+
+    try:
+        memory_items = asyncio.run(session.get_items())
+    except Exception:
+        memory_items = []
+
+    st.caption(f"저장된 항목 수: {len(memory_items)}")
+
+    with st.expander("메모리 보기"):
+        st.json(memory_items)
 
     st.divider()
     st.subheader("활동 로그")
